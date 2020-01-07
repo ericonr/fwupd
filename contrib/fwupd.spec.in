@@ -390,6 +390,7 @@ mkdir -p --mode=0700 $RPM_BUILD_ROOT%{_localstatedir}/lib/fwupd/gnupg
 %{_libdir}/fwupd-plugins-3/libfu_plugin_linux_sleep.so
 %{_libdir}/fwupd-plugins-3/libfu_plugin_linux_swap.so
 %{_libdir}/fwupd-plugins-3/libfu_plugin_linux_tainted.so
+%{_libdir}/fwupd-plugins-3/libfu_plugin_novatek.so
 %if 0%{?have_modem_manager}
 %{_libdir}/fwupd-plugins-3/libfu_plugin_modem_manager.so
 %endif
