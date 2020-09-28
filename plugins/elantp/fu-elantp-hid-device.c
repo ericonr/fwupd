@@ -162,6 +162,8 @@ fu_elantp_hid_device_setup (FuDevice *device, GError **error)
 		return FALSE;
 	}
 	fwver = fu_common_read_uint16 (buf, G_LITTLE_ENDIAN);
+	if (fwver == 0xFFFF || fwver == ETP_CMD_I2C_FW_VERSION)
+		fwver = 0x0;
 	version = fu_common_version_from_uint16 (fwver, FWUPD_VERSION_FORMAT_HEX);
 	fu_device_set_version (device, version);
 
