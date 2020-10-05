@@ -58,16 +58,17 @@ fu_bcm57xx_device_probe (FuUdevDevice *device, GError **error)
 		return FALSE;
 	}
 
+	/* we need this even for non-recovery to reset APE */
+	fu_device_set_quirks (FU_DEVICE (self->recovery),
+			      fu_device_get_quirks (FU_DEVICE (self)));
+	fu_device_incorporate (FU_DEVICE (self->recovery), FU_DEVICE (self));
+	if (!fu_device_probe (FU_DEVICE (self->recovery), error))
+		return FALSE;
+
 	/* only if has an interface */
 	fn = g_build_filename (fu_udev_device_get_sysfs_path (device), "net", NULL);
 	ifaces = fu_common_filename_glob (fn, "en*", NULL);
 	if (ifaces == NULL || ifaces->len == 0) {
-		XXXX
-		fu_device_set_quirks (FU_DEVICE (self->recovery),
-				      fu_device_get_quirks (FU_DEVICE (self)));
-		fu_device_incorporate (FU_DEVICE (self->recovery), FU_DEVICE (self));
-		if (!fu_device_probe (FU_DEVICE (self->recovery), error))
-			return FALSE;
 		fu_device_add_child (FU_DEVICE (self), FU_DEVICE (self->recovery));
 	} else {
 		self->ethtool_iface = g_path_get_basename (g_ptr_array_index (ifaces, 0));
