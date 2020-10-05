@@ -622,7 +622,7 @@ fu_bcm57xx_recovery_device_setup (FuDevice *device, GError **error)
 						   BCM_NVRAM_STAGE1_BASE + veraddr,
 						   bufver, 4, error))
 			return FALSE;
-		veritem = fu_bcm57xx_veritem_new (bufver, sizeof(bufver));
+		veritem = fu_bcm57xx_veritem_new ((guint8 *) bufver, sizeof(bufver));
 		if (veritem != NULL) {
 			fu_device_set_version (device, veritem->version);
 			fu_device_set_branch (device, veritem->branch);

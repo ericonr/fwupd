@@ -64,7 +64,7 @@ fu_bcm57xx_stage1_image_parse (FuFirmwareImage *image,
 				     buf, bufsz, veraddr - BCM_PHYS_ADDR_DEFAULT, /* src */
 				     sizeof(bufver), error))
 			return FALSE;
-		veritem = fu_bcm57xx_veritem_new (bufver, sizeof(bufver));
+		veritem = fu_bcm57xx_veritem_new ((guint8 *) bufver, sizeof(bufver));
 		if (veritem != NULL)
 			fu_firmware_image_set_version (image, veritem->version);
 	}

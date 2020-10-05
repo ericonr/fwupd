@@ -77,7 +77,7 @@ fu_bcm57xx_veritem_free (Bcm57xxVeritem *veritem)
 }
 
 Bcm57xxVeritem *
-fu_bcm57xx_veritem_new (const guint32 *buf, gsize bufsz)
+fu_bcm57xx_veritem_new (const guint8 *buf, gsize bufsz)
 {
 	g_autofree gchar *tmp = NULL;
 	g_autoptr(Bcm57xxVeritem) veritem = g_new0 (Bcm57xxVeritem, 1);

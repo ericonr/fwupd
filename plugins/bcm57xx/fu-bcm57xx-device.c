@@ -19,12 +19,15 @@
 #include <sys/socket.h>
 #endif
 
+#include "fu-chunk.h"
 #include "fu-common.h"
 
 #include "fu-bcm57xx-common.h"
 #include "fu-bcm57xx-device.h"
 #include "fu-bcm57xx-recovery-device.h"
 #include "fu-bcm57xx-firmware.h"
+
+#define FU_BCM57XX_BLOCK_SZ		0x8000 /* 32kb */
 
 struct _FuBcm57xxDevice {
 	FuUdevDevice		 parent_instance;
@@ -81,8 +84,8 @@ fu_bcm57xx_device_probe (FuUdevDevice *device, GError **error)
 static gboolean
 fu_bcm57xx_device_nvram_write (FuBcm57xxDevice *self,
 			       guint32 address,
-			       const guint32 *buf,
-			       guint32 bufsz_wrds,
+			       const guint8 *buf,
+			       gsize bufsz,
 			       GError **error)
 {
 #ifdef HAVE_ETHTOOL_H
@@ -101,7 +104,7 @@ fu_bcm57xx_device_nvram_write (FuBcm57xxDevice *self,
 	}
 
 	/* sanity check */
-	if (address + bufsz_wrds * sizeof(guint32) > fu_device_get_firmware_size_max (FU_DEVICE (self))) {
+	if (address + bufsz > fu_device_get_firmware_size_max (FU_DEVICE (self))) {
 		g_set_error (error,
 			     G_IO_ERROR,
 			     G_IO_ERROR_FAILED,
@@ -111,11 +114,11 @@ fu_bcm57xx_device_nvram_write (FuBcm57xxDevice *self,
 	}
 
 	/* write EEPROM (NVRAM) data */
-	eepromsz = sizeof(struct ethtool_eeprom) + bufsz_wrds * sizeof(guint32);
+	eepromsz = sizeof(struct ethtool_eeprom) + bufsz;
 	eeprom = (struct ethtool_eeprom *) g_malloc0 (eepromsz);
 	eeprom->cmd = ETHTOOL_SEEPROM;
 	eeprom->magic = BCM_NVRAM_MAGIC;
-	eeprom->len = bufsz_wrds * sizeof(guint32);
+	eeprom->len = bufsz;
 	eeprom->offset = address;
 	memcpy (eeprom->data, buf, eeprom->len);
 	strncpy (ifr.ifr_name, self->ethtool_iface, IFNAMSIZ - 1);
@@ -151,8 +154,8 @@ fu_bcm57xx_device_nvram_write (FuBcm57xxDevice *self,
 static gboolean
 fu_bcm57xx_device_nvram_read (FuBcm57xxDevice *self,
 			      guint32 address,
-			      guint32 *buf,
-			      guint32 bufsz_wrds,
+			      guint8 *buf,
+			      gsize bufsz,
 			      GError **error)
 {
 #ifdef HAVE_ETHTOOL_H
@@ -171,7 +174,7 @@ fu_bcm57xx_device_nvram_read (FuBcm57xxDevice *self,
 	}
 
 	/* sanity check */
-	if (address + bufsz_wrds * sizeof(guint32) > fu_device_get_firmware_size_max (FU_DEVICE (self))) {
+	if (address + bufsz > fu_device_get_firmware_size_max (FU_DEVICE (self))) {
 		g_set_error (error,
 			     G_IO_ERROR,
 			     G_IO_ERROR_FAILED,
@@ -181,10 +184,10 @@ fu_bcm57xx_device_nvram_read (FuBcm57xxDevice *self,
 	}
 
 	/* read EEPROM (NVRAM) data */
-	eepromsz = sizeof(struct ethtool_eeprom) + bufsz_wrds * sizeof(guint32);
+	eepromsz = sizeof(struct ethtool_eeprom) + bufsz;
 	eeprom = (struct ethtool_eeprom *) g_malloc0 (eepromsz);
 	eeprom->cmd = ETHTOOL_GEEPROM;
-	eeprom->len = bufsz_wrds * sizeof(guint32);
+	eeprom->len = bufsz;
 	eeprom->offset = address;
 	strncpy (ifr.ifr_name, self->ethtool_iface, IFNAMSIZ - 1);
 	ifr.ifr_data = (char *) eeprom;
@@ -206,10 +209,10 @@ fu_bcm57xx_device_nvram_read (FuBcm57xxDevice *self,
 	}
 
 	/* copy back data */
-	if (!fu_memcpy_safe ((guint8 *) buf, bufsz_wrds * sizeof(guint32), 0x0,	/* dst */
-			     (guint8 *) eeprom, eepromsz,			/* src */
+	if (!fu_memcpy_safe (buf, bufsz, 0x0,		/* dst */
+			     (guint8 *) eeprom, eepromsz,	/* src */
 			     G_STRUCT_OFFSET(struct ethtool_eeprom, data),
-			     bufsz_wrds * sizeof(guint32), error))
+			     bufsz, error))
 		return FALSE;
 
 	/* success */
@@ -316,14 +319,23 @@ static GBytes *
 fu_bcm57xx_device_dump_firmware (FuDevice *device, GError **error)
 {
 	FuBcm57xxDevice *self = FU_BCM57XX_DEVICE (device);
-	gsize bufsz_dwrds = fu_device_get_firmware_size_max (FU_DEVICE (self)) / sizeof(guint32);
-	g_autofree guint32 *buf_dwrds = g_new0 (guint32, bufsz_dwrds);
+	const gsize bufsz = fu_device_get_firmware_size_max (FU_DEVICE (self));
+	g_autofree guint8 *buf = g_malloc0 (bufsz);
+	g_autoptr(GPtrArray) chunks = NULL;
+
+	fu_device_set_status (device, FWUPD_STATUS_DEVICE_READ);
+	chunks = fu_chunk_array_new (buf, bufsz, 0x0, 0x0, FU_BCM57XX_BLOCK_SZ);
+	for (guint i = 0; i < chunks->len; i++) {
+		FuChunk *chk = g_ptr_array_index (chunks, i);
+		if (!fu_bcm57xx_device_nvram_read (self, chk->address,
+						   (guint8 *) chk->data, chk->data_sz,
+						   error))
+			return NULL;
+		fu_device_set_progress_full (device, i, chunks->len);
+	}
 
 	/* read from hardware */
-	fu_device_set_status (device, FWUPD_STATUS_DEVICE_READ);
-	if (!fu_bcm57xx_device_nvram_read (self, 0x0, buf_dwrds, bufsz_dwrds, error))
-		return NULL;
-	return g_bytes_new (buf_dwrds, bufsz_dwrds * sizeof(guint32));
+	return g_bytes_new_take (g_steal_pointer (&buf), bufsz);
 }
 
 static FuFirmware *
@@ -418,11 +430,9 @@ fu_bcm57xx_device_write_firmware (FuDevice *device,
 				  GError **error)
 {
 	FuBcm57xxDevice *self = FU_BCM57XX_DEVICE (device);
-	const guint8 *buf;
-	gsize bufsz = 0;
-	gsize bufsz_dwrds;
-	g_autofree guint32 *buf_dwrds = NULL;
 	g_autoptr(GBytes) blob = NULL;
+	g_autoptr(GBytes) blob_verify = NULL;
+	g_autoptr(GPtrArray) chunks = NULL;
 
 	/* build the images into one linear blob of the correct size */
 	fu_device_set_status (device, FWUPD_STATUS_DECOMPRESSING);
@@ -430,18 +440,24 @@ fu_bcm57xx_device_write_firmware (FuDevice *device,
 	if (blob == NULL)
 		return FALSE;
 
-	/* align into uint32_t buffer */
-	buf = g_bytes_get_data (blob, &bufsz);
-	bufsz_dwrds = bufsz / sizeof(guint32);
-	buf_dwrds = g_new0 (guint32, bufsz_dwrds);
-	if (!fu_memcpy_safe ((guint8 *) buf_dwrds, bufsz_dwrds * sizeof(guint32), 0x0,	/* dst */
-			     buf, bufsz, 0x0,						/* src */
-			     bufsz, error))
-		return FALSE;
-
 	/* hit hardware */
 	fu_device_set_status (device, FWUPD_STATUS_DEVICE_WRITE);
-	if (!fu_bcm57xx_device_nvram_write (self, 0x0, buf_dwrds, bufsz_dwrds, error))
+	chunks = fu_chunk_array_new_from_bytes (blob, 0x0, 0x0, FU_BCM57XX_BLOCK_SZ);
+	for (guint i = 0; i < chunks->len; i++) {
+		FuChunk *chk = g_ptr_array_index (chunks, i);
+		if (!fu_bcm57xx_device_nvram_write (self, chk->address,
+						    chk->data, chk->data_sz,
+						    error))
+			return FALSE;
+		fu_device_set_progress_full (device, i, chunks->len);
+	}
+
+	/* verify */
+	fu_device_set_status (device, FWUPD_STATUS_DEVICE_VERIFY);
+	blob_verify = fu_bcm57xx_device_dump_firmware (device, error);
+	if (blob_verify == NULL)
+		return FALSE;
+	if (!fu_common_bytes_compare (blob, blob_verify, error))
 		return FALSE;
 
 	/* reset APE */
@@ -470,7 +486,7 @@ fu_bcm57xx_device_setup (FuDevice *device, GError **error)
 
 	/* get NVRAM version */
 	if (!fu_bcm57xx_device_nvram_read (self, BCM_NVRAM_STAGE1_BASE + BCM_NVRAM_STAGE1_VERSION,
-					   &fwversion, 1, error))
+					   (guint8 *) &fwversion, sizeof(guint32), error))
 		return FALSE;
 	if (fwversion != 0x0) {
 		g_autofree gchar *fwversion_str = NULL;
@@ -483,21 +499,21 @@ fu_bcm57xx_device_setup (FuDevice *device, GError **error)
 		fu_device_set_version_raw (device, fwversion);
 		fu_device_set_branch (device, BCM_FW_BRANCH_OSS_FIRMWARE);
 	} else {
-		guint32 bufver[4] = { 0x0 };
+		guint8 bufver[16] = { 0x0 };
 		guint32 veraddr = 0;
 		g_autoptr(Bcm57xxVeritem) veritem = NULL;
 
 		/* fall back to the string, e.g. '5719-v1.43' */
 		if (!fu_bcm57xx_device_nvram_read (self,
 						   BCM_NVRAM_STAGE1_BASE + BCM_NVRAM_STAGE1_VERADDR,
-						   &veraddr, 1, error))
+						   (guint8 *) &veraddr, sizeof(guint32), error))
 			return FALSE;
 		veraddr = GUINT32_FROM_BE(veraddr);
 		if (veraddr > BCM_PHYS_ADDR_DEFAULT)
 			veraddr -= BCM_PHYS_ADDR_DEFAULT;
 		if (!fu_bcm57xx_device_nvram_read (self,
 						   BCM_NVRAM_STAGE1_BASE + veraddr,
-						   bufver, 4, error))
+						   bufver, sizeof(bufver), error))
 			return FALSE;
 		veritem = fu_bcm57xx_veritem_new (bufver, sizeof(bufver));
 		if (veritem != NULL) {
