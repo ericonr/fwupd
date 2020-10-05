@@ -100,6 +100,7 @@ fu_bcm57xx_ethtool_device_nvram_write (FuBcm57xxEthtoolDevice *self,
 	eepromsz = sizeof(struct ethtool_eeprom) + bufsz_wrds * sizeof(guint32);
 	eeprom = (struct ethtool_eeprom *) g_malloc0 (eepromsz);
 	eeprom->cmd = ETHTOOL_SEEPROM;
+	eeprom->magic = BCM_NVRAM_MAGIC;
 	eeprom->len = bufsz_wrds * sizeof(guint32);
 	eeprom->offset = address;
 	memcpy (eeprom->data, buf, eeprom->len);
