@@ -2769,8 +2769,6 @@ fu_engine_firmware_dump (FuEngine *self,
 		g_prefix_error (error, "failed to open device for firmware read: ");
 		return NULL;
 	}
-	if (!fu_device_detach (device, error))
-		return NULL;
 	fw = fu_device_dump_firmware (device, error);
 	if (fw == NULL) {
 		g_autoptr(GError) error_local = NULL;
@@ -2780,8 +2778,6 @@ fu_engine_firmware_dump (FuEngine *self,
 		}
 		return NULL;
 	}
-	if (!fu_device_attach (device, error))
-		return NULL;
 	return g_steal_pointer (&fw);
 }
 
