@@ -22,29 +22,30 @@
 #include "fu-common.h"
 
 #include "fu-bcm57xx-common.h"
-#include "fu-bcm57xx-ethtool-device.h"
-#include "fu-bcm57xx-mmap-device.h"
+#include "fu-bcm57xx-device.h"
+#include "fu-bcm57xx-recovery-device.h"
 #include "fu-bcm57xx-firmware.h"
 
-struct _FuBcm57xxEthtoolDevice {
+struct _FuBcm57xxDevice {
 	FuUdevDevice		 parent_instance;
+	FuBcm57xxRecoveryDevice	*recovery;
 	gchar			*ethtool_iface;
 	int			 ethtool_fd;
 };
 
-G_DEFINE_TYPE (FuBcm57xxEthtoolDevice, fu_bcm57xx_ethtool_device, FU_TYPE_UDEV_DEVICE)
+G_DEFINE_TYPE (FuBcm57xxDevice, fu_bcm57xx_device, FU_TYPE_UDEV_DEVICE)
 
 static void
-fu_bcm57xx_ethtool_device_to_string (FuUdevDevice *device, guint idt, GString *str)
+fu_bcm57xx_device_to_string (FuUdevDevice *device, guint idt, GString *str)
 {
-	FuBcm57xxEthtoolDevice *self = FU_BCM57XX_ETHTOOL_DEVICE (device);
+	FuBcm57xxDevice *self = FU_BCM57XX_DEVICE (device);
 	fu_common_string_append_kv (str, idt, "EthtoolIface", self->ethtool_iface);
 }
 
 static gboolean
-fu_bcm57xx_ethtool_device_probe (FuUdevDevice *device, GError **error)
+fu_bcm57xx_device_probe (FuUdevDevice *device, GError **error)
 {
-	FuBcm57xxEthtoolDevice *self = FU_BCM57XX_ETHTOOL_DEVICE (device);
+	FuBcm57xxDevice *self = FU_BCM57XX_DEVICE (device);
 	g_autofree gchar *fn = NULL;
 	g_autoptr(GPtrArray) ifaces = NULL;
 
@@ -61,30 +62,36 @@ fu_bcm57xx_ethtool_device_probe (FuUdevDevice *device, GError **error)
 	fn = g_build_filename (fu_udev_device_get_sysfs_path (device), "net", NULL);
 	ifaces = fu_common_filename_glob (fn, "en*", NULL);
 	if (ifaces == NULL || ifaces->len == 0) {
-		g_set_error_literal (error,
-				     FWUPD_ERROR,
-				     FWUPD_ERROR_NOT_SUPPORTED,
-				     "no interface detected");
-		return FALSE;
+		fu_device_add_child (FU_DEVICE (self), FU_DEVICE (self->recovery));
+	} else {
+		self->ethtool_iface = g_path_get_basename (g_ptr_array_index (ifaces, 0));
 	}
-	self->ethtool_iface = g_path_get_basename (g_ptr_array_index (ifaces, 0));
 
 	/* success */
 	return fu_udev_device_set_physical_id (device, "pci", error);
 }
 
 static gboolean
-fu_bcm57xx_ethtool_device_nvram_write (FuBcm57xxEthtoolDevice *self,
-				       guint32 address,
-				       const guint32 *buf,
-				       guint32 bufsz_wrds,
-				       GError **error)
+fu_bcm57xx_device_nvram_write (FuBcm57xxDevice *self,
+			       guint32 address,
+			       const guint32 *buf,
+			       guint32 bufsz_wrds,
+			       GError **error)
 {
 #ifdef HAVE_ETHTOOL_H
 	gsize eepromsz;
 	gint rc = -1;
 	struct ifreq ifr = { 0 };
 	g_autofree struct ethtool_eeprom *eeprom = NULL;
+
+	/* failed to load tg3 */
+	if (self->ethtool_iface == NULL) {
+		g_set_error_literal (error,
+				     FWUPD_ERROR,
+				     FWUPD_ERROR_NOT_SUPPORTED,
+				     "Not supported as ethtool interface disabled");
+		return FALSE;
+	}
 
 	/* sanity check */
 	if (address + bufsz_wrds * sizeof(guint32) > fu_device_get_firmware_size_max (FU_DEVICE (self))) {
@@ -109,10 +116,10 @@ fu_bcm57xx_ethtool_device_nvram_write (FuBcm57xxEthtoolDevice *self,
 #ifdef HAVE_IOCTL_H
 	rc = ioctl (self->ethtool_fd, SIOCETHTOOL, &ifr);
 #else
-	g_set_error (error,
-		     FWUPD_ERROR,
-		     FWUPD_ERROR_NOT_SUPPORTED,
-		     "Not supported as <sys/ioctl.h> not found");
+	g_set_error_literal (error,
+			     FWUPD_ERROR,
+			     FWUPD_ERROR_NOT_SUPPORTED,
+			     "Not supported as <sys/ioctl.h> not found");
 	return FALSE;
 #endif
 	if (rc < 0) {
@@ -126,26 +133,35 @@ fu_bcm57xx_ethtool_device_nvram_write (FuBcm57xxEthtoolDevice *self,
 	/* success */
 	return TRUE;
 #else
-	g_set_error (error,
-		     FWUPD_ERROR,
-		     FWUPD_ERROR_NOT_SUPPORTED,
-		     "Not supported as <linux/ethtool.h> not found");
+	g_set_error_literal (error,
+			     FWUPD_ERROR,
+			     FWUPD_ERROR_NOT_SUPPORTED,
+			     "Not supported as <linux/ethtool.h> not found");
 	return FALSE;
 #endif
 }
 
 static gboolean
-fu_bcm57xx_ethtool_device_nvram_read (FuBcm57xxEthtoolDevice *self,
-				      guint32 address,
-				      guint32 *buf,
-				      guint32 bufsz_wrds,
-				      GError **error)
+fu_bcm57xx_device_nvram_read (FuBcm57xxDevice *self,
+			      guint32 address,
+			      guint32 *buf,
+			      guint32 bufsz_wrds,
+			      GError **error)
 {
 #ifdef HAVE_ETHTOOL_H
 	gsize eepromsz;
 	gint rc = -1;
 	struct ifreq ifr = { 0 };
 	g_autofree struct ethtool_eeprom *eeprom = NULL;
+
+	/* failed to load tg3 */
+	if (self->ethtool_iface == NULL) {
+		g_set_error_literal (error,
+				     FWUPD_ERROR,
+				     FWUPD_ERROR_NOT_SUPPORTED,
+				     "Not supported as ethtool interface disabled");
+		return FALSE;
+	}
 
 	/* sanity check */
 	if (address + bufsz_wrds * sizeof(guint32) > fu_device_get_firmware_size_max (FU_DEVICE (self))) {
@@ -168,10 +184,10 @@ fu_bcm57xx_ethtool_device_nvram_read (FuBcm57xxEthtoolDevice *self,
 #ifdef HAVE_IOCTL_H
 	rc = ioctl (self->ethtool_fd, SIOCETHTOOL, &ifr);
 #else
-	g_set_error (error,
-		     FWUPD_ERROR,
-		     FWUPD_ERROR_NOT_SUPPORTED,
-		     "Not supported as <sys/ioctl.h> not found");
+	g_set_error_literal (error,
+			     FWUPD_ERROR,
+			     FWUPD_ERROR_NOT_SUPPORTED,
+			     "Not supported as <sys/ioctl.h> not found");
 	return FALSE;
 #endif
 	if (rc < 0) {
@@ -192,21 +208,30 @@ fu_bcm57xx_ethtool_device_nvram_read (FuBcm57xxEthtoolDevice *self,
 	/* success */
 	return TRUE;
 #else
-	g_set_error (error,
-		     FWUPD_ERROR,
-		     FWUPD_ERROR_NOT_SUPPORTED,
-		     "Not supported as <linux/ethtool.h> not found");
+	g_set_error_literal (error,
+			     FWUPD_ERROR,
+			     FWUPD_ERROR_NOT_SUPPORTED,
+			     "Not supported as <linux/ethtool.h> not found");
 	return FALSE;
 #endif
 }
 
 static gboolean
-fu_bcm57xx_ethtool_device_nvram_check (FuBcm57xxEthtoolDevice *self, GError **error)
+fu_bcm57xx_device_nvram_check (FuBcm57xxDevice *self, GError **error)
 {
 #ifdef HAVE_ETHTOOL_H
 	gint rc = -1;
 	struct ethtool_drvinfo drvinfo = { 0 };
 	struct ifreq ifr = { 0 };
+
+	/* failed to load tg3 */
+	if (self->ethtool_iface == NULL) {
+		g_set_error_literal (error,
+				     FWUPD_ERROR,
+				     FWUPD_ERROR_NOT_SUPPORTED,
+				     "Not supported as ethtool interface disabled");
+		return FALSE;
+	}
 
 	/* get driver info */
 	drvinfo.cmd = ETHTOOL_GDRVINFO;
@@ -215,10 +240,10 @@ fu_bcm57xx_ethtool_device_nvram_check (FuBcm57xxEthtoolDevice *self, GError **er
 #ifdef HAVE_IOCTL_H
 	rc = ioctl (self->ethtool_fd, SIOCETHTOOL, &ifr);
 #else
-	g_set_error (error,
-		     FWUPD_ERROR,
-		     FWUPD_ERROR_NOT_SUPPORTED,
-		     "Not supported as <sys/ioctl.h> not found");
+	g_set_error_literal (error,
+			     FWUPD_ERROR,
+			     FWUPD_ERROR_NOT_SUPPORTED,
+			     "Not supported as <sys/ioctl.h> not found");
 	return FALSE;
 #endif
 	if (rc < 0) {
@@ -253,16 +278,14 @@ fu_bcm57xx_ethtool_device_nvram_check (FuBcm57xxEthtoolDevice *self, GError **er
 }
 
 static gboolean
-fu_bcm57xx_ethtool_device_activate (FuDevice *device, GError **error)
+fu_bcm57xx_device_activate (FuDevice *device, GError **error)
 {
-	GUdevDevice *udev_device = fu_udev_device_get_dev (FU_UDEV_DEVICE (device));
-	g_autoptr(FuBcm57xxMmapDevice) dev_mmap = NULL;
+	FuBcm57xxDevice *self = FU_BCM57XX_DEVICE (device);
 	g_autoptr(FuDeviceLocker) locker1 = NULL;
 	g_autoptr(FuDeviceLocker) locker2 = NULL;
 
 	/* the only way to do this is using the mmap method */
-	dev_mmap = fu_bcm57xx_mmap_device_new (udev_device);
-	locker2 = fu_device_locker_new_full (FU_DEVICE (dev_mmap),
+	locker2 = fu_device_locker_new_full (FU_DEVICE (self->recovery),
 					     (FuDeviceLockerFunc) fu_device_detach,
 					     (FuDeviceLockerFunc) fu_device_attach,
 					     error);
@@ -270,12 +293,12 @@ fu_bcm57xx_ethtool_device_activate (FuDevice *device, GError **error)
 		return FALSE;
 
 	/* open */
-	locker1 = fu_device_locker_new (FU_DEVICE (dev_mmap), error);
+	locker1 = fu_device_locker_new (FU_DEVICE (self->recovery), error);
 	if (locker1 == NULL)
 		return FALSE;
 
 	/* activate, causing APE reset, then close, then attach */
-	if (!fu_device_activate (FU_DEVICE (dev_mmap), error))
+	if (!fu_device_activate (FU_DEVICE (self->recovery), error))
 		return FALSE;
 
 	/* ensure we attach before we close */
@@ -283,27 +306,27 @@ fu_bcm57xx_ethtool_device_activate (FuDevice *device, GError **error)
 }
 
 static GBytes *
-fu_bcm57xx_ethtool_device_dump_firmware (FuDevice *device, GError **error)
+fu_bcm57xx_device_dump_firmware (FuDevice *device, GError **error)
 {
-	FuBcm57xxEthtoolDevice *self = FU_BCM57XX_ETHTOOL_DEVICE (device);
+	FuBcm57xxDevice *self = FU_BCM57XX_DEVICE (device);
 	gsize bufsz_dwrds = fu_device_get_firmware_size_max (FU_DEVICE (self)) / sizeof(guint32);
 	g_autofree guint32 *buf_dwrds = g_new0 (guint32, bufsz_dwrds);
 
 	/* read from hardware */
 	fu_device_set_status (device, FWUPD_STATUS_DEVICE_READ);
-	if (!fu_bcm57xx_ethtool_device_nvram_read (self, 0x0, buf_dwrds, bufsz_dwrds, error))
+	if (!fu_bcm57xx_device_nvram_read (self, 0x0, buf_dwrds, bufsz_dwrds, error))
 		return NULL;
 	return g_bytes_new (buf_dwrds, bufsz_dwrds * sizeof(guint32));
 }
 
 static FuFirmware *
-fu_bcm57xx_ethtool_device_read_firmware (FuDevice *device, GError **error)
+fu_bcm57xx_device_read_firmware (FuDevice *device, GError **error)
 {
 	g_autoptr(FuFirmware) firmware = fu_bcm57xx_firmware_new ();
 	g_autoptr(GBytes) fw = NULL;
 
 	/* read from hardware */
-	fw = fu_bcm57xx_ethtool_device_dump_firmware (device, error);
+	fw = fu_bcm57xx_device_dump_firmware (device, error);
 	if (fw == NULL)
 		return NULL;
 	if (!fu_firmware_parse (firmware, fw, FWUPD_INSTALL_FLAG_NONE, error))
@@ -320,10 +343,10 @@ fu_bcm57xx_ethtool_device_read_firmware (FuDevice *device, GError **error)
 }
 
 static FuFirmware *
-fu_bcm57xx_ethtool_device_prepare_firmware (FuDevice *device,
-					    GBytes *fw,
-					    FwupdInstallFlags flags,
-					    GError **error)
+fu_bcm57xx_device_prepare_firmware (FuDevice *device,
+				    GBytes *fw,
+				    FwupdInstallFlags flags,
+				    GError **error)
 {
 	g_autoptr(GBytes) fw_old = NULL;
 	g_autoptr(FuFirmware) firmware = fu_bcm57xx_firmware_new ();
@@ -355,7 +378,7 @@ fu_bcm57xx_ethtool_device_prepare_firmware (FuDevice *device,
 	}
 
 	/* get the existing firmware from the device */
-	fw_old = fu_bcm57xx_ethtool_device_dump_firmware (device, error);
+	fw_old = fu_bcm57xx_device_dump_firmware (device, error);
 	if (fw_old == NULL)
 		return NULL;
 	if (!fu_firmware_parse (firmware, fw_old, FWUPD_INSTALL_FLAG_NONE, error)) {
@@ -379,12 +402,12 @@ fu_bcm57xx_ethtool_device_prepare_firmware (FuDevice *device,
 }
 
 static gboolean
-fu_bcm57xx_ethtool_device_write_firmware (FuDevice *device,
-					  FuFirmware *firmware,
-					  FwupdInstallFlags flags,
-					  GError **error)
+fu_bcm57xx_device_write_firmware (FuDevice *device,
+				  FuFirmware *firmware,
+				  FwupdInstallFlags flags,
+				  GError **error)
 {
-	FuBcm57xxEthtoolDevice *self = FU_BCM57XX_ETHTOOL_DEVICE (device);
+	FuBcm57xxDevice *self = FU_BCM57XX_DEVICE (device);
 	const guint8 *buf;
 	gsize bufsz = 0;
 	gsize bufsz_dwrds;
@@ -408,7 +431,7 @@ fu_bcm57xx_ethtool_device_write_firmware (FuDevice *device,
 
 	/* hit hardware */
 	fu_device_set_status (device, FWUPD_STATUS_DEVICE_WRITE);
-	if (!fu_bcm57xx_ethtool_device_nvram_write (self, 0x0, buf_dwrds, bufsz_dwrds, error))
+	if (!fu_bcm57xx_device_nvram_write (self, 0x0, buf_dwrds, bufsz_dwrds, error))
 		return FALSE;
 
 	/* reset APE */
@@ -416,18 +439,24 @@ fu_bcm57xx_ethtool_device_write_firmware (FuDevice *device,
 }
 
 static gboolean
-fu_bcm57xx_ethtool_device_setup (FuDevice *device, GError **error)
+fu_bcm57xx_device_setup (FuDevice *device, GError **error)
 {
-	FuBcm57xxEthtoolDevice *self = FU_BCM57XX_ETHTOOL_DEVICE (device);
+	FuBcm57xxDevice *self = FU_BCM57XX_DEVICE (device);
 	guint32 fwversion = 0;
 
+	/* device is in recovery mode */
+	if (self->ethtool_iface == NULL) {
+		g_debug ("device in recovery mode, use alternate device");
+		return TRUE;
+	}
+
 	/* check the EEPROM size */
-	if (!fu_bcm57xx_ethtool_device_nvram_check (self, error))
+	if (!fu_bcm57xx_device_nvram_check (self, error))
 		return FALSE;
 
 	/* get NVRAM version */
-	if (!fu_bcm57xx_ethtool_device_nvram_read (self, BCM_NVRAM_STAGE1_BASE + BCM_NVRAM_STAGE1_VERSION,
-						   &fwversion, 1, error))
+	if (!fu_bcm57xx_device_nvram_read (self, BCM_NVRAM_STAGE1_BASE + BCM_NVRAM_STAGE1_VERSION,
+					   &fwversion, 1, error))
 		return FALSE;
 	if (fwversion != 0x0) {
 		g_autofree gchar *fwversion_str = NULL;
@@ -445,16 +474,16 @@ fu_bcm57xx_ethtool_device_setup (FuDevice *device, GError **error)
 		g_autoptr(Bcm57xxVeritem) veritem = NULL;
 
 		/* fall back to the string, e.g. '5719-v1.43' */
-		if (!fu_bcm57xx_ethtool_device_nvram_read (self,
-							   BCM_NVRAM_STAGE1_BASE + BCM_NVRAM_STAGE1_VERADDR,
-							   &veraddr, 1, error))
+		if (!fu_bcm57xx_device_nvram_read (self,
+						   BCM_NVRAM_STAGE1_BASE + BCM_NVRAM_STAGE1_VERADDR,
+						   &veraddr, 1, error))
 			return FALSE;
 		veraddr = GUINT32_FROM_BE(veraddr);
 		if (veraddr > BCM_PHYS_ADDR_DEFAULT)
 			veraddr -= BCM_PHYS_ADDR_DEFAULT;
-		if (!fu_bcm57xx_ethtool_device_nvram_read (self,
-							   BCM_NVRAM_STAGE1_BASE + veraddr,
-							   bufver, 4, error))
+		if (!fu_bcm57xx_device_nvram_read (self,
+						   BCM_NVRAM_STAGE1_BASE + veraddr,
+						   bufver, 4, error))
 			return FALSE;
 		veritem = fu_bcm57xx_veritem_new (bufver, sizeof(bufver));
 		if (veritem != NULL) {
@@ -468,10 +497,10 @@ fu_bcm57xx_ethtool_device_setup (FuDevice *device, GError **error)
 }
 
 static gboolean
-fu_bcm57xx_ethtool_device_open (FuDevice *device, GError **error)
+fu_bcm57xx_device_open (FuDevice *device, GError **error)
 {
 #ifdef HAVE_SOCKET_H
-	FuBcm57xxEthtoolDevice *self = FU_BCM57XX_ETHTOOL_DEVICE (device);
+	FuBcm57xxDevice *self = FU_BCM57XX_DEVICE (device);
 	self->ethtool_fd = socket (AF_INET, SOCK_DGRAM, 0);
 	return TRUE;
 #else
@@ -484,16 +513,18 @@ fu_bcm57xx_ethtool_device_open (FuDevice *device, GError **error)
 }
 
 static gboolean
-fu_bcm57xx_ethtool_device_close (FuDevice *device, GError **error)
+fu_bcm57xx_device_close (FuDevice *device, GError **error)
 {
-	FuBcm57xxEthtoolDevice *self = FU_BCM57XX_ETHTOOL_DEVICE (device);
+	FuBcm57xxDevice *self = FU_BCM57XX_DEVICE (device);
 	close (self->ethtool_fd);
 	return TRUE;
 }
 
 static void
-fu_bcm57xx_ethtool_device_init (FuBcm57xxEthtoolDevice *self)
+fu_bcm57xx_device_init (FuBcm57xxDevice *self)
 {
+	GUdevDevice *udev_device = fu_udev_device_get_dev (FU_UDEV_DEVICE (self));
+
 	fu_device_add_flag (FU_DEVICE (self), FWUPD_DEVICE_FLAG_UPDATABLE);
 	fu_device_add_flag (FU_DEVICE (self), FWUPD_DEVICE_FLAG_CAN_VERIFY_IMAGE);
 	fu_device_add_flag (FU_DEVICE (self), FWUPD_DEVICE_FLAG_NO_GUID_MATCHING);
@@ -504,32 +535,35 @@ fu_bcm57xx_ethtool_device_init (FuBcm57xxEthtoolDevice *self)
 
 	/* other values are set from a quirk */
 	fu_device_set_firmware_size (FU_DEVICE (self), BCM_FIRMWARE_SIZE);
+
+	/* used for recovery in case of ethtool failure */
+	self->recovery = fu_bcm57xx_recovery_device_new (udev_device);
 }
 
 static void
-fu_bcm57xx_ethtool_device_finalize (GObject *object)
+fu_bcm57xx_device_finalize (GObject *object)
 {
-	FuBcm57xxEthtoolDevice *self= FU_BCM57XX_ETHTOOL_DEVICE (object);
+	FuBcm57xxDevice *self= FU_BCM57XX_DEVICE (object);
 	g_free (self->ethtool_iface);
-	G_OBJECT_CLASS (fu_bcm57xx_ethtool_device_parent_class)->finalize (object);
+	G_OBJECT_CLASS (fu_bcm57xx_device_parent_class)->finalize (object);
 }
 
 static void
-fu_bcm57xx_ethtool_device_class_init (FuBcm57xxEthtoolDeviceClass *klass)
+fu_bcm57xx_device_class_init (FuBcm57xxDeviceClass *klass)
 {
 	GObjectClass *object_class = G_OBJECT_CLASS (klass);
 	FuDeviceClass *klass_device = FU_DEVICE_CLASS (klass);
 	FuUdevDeviceClass *klass_udev_device = FU_UDEV_DEVICE_CLASS (klass);
-	object_class->finalize = fu_bcm57xx_ethtool_device_finalize;
-	klass_device->prepare_firmware = fu_bcm57xx_ethtool_device_prepare_firmware;
-	klass_device->setup = fu_bcm57xx_ethtool_device_setup;
-	klass_device->reload = fu_bcm57xx_ethtool_device_setup;
-	klass_device->open = fu_bcm57xx_ethtool_device_open;
-	klass_device->close = fu_bcm57xx_ethtool_device_close;
-	klass_device->activate = fu_bcm57xx_ethtool_device_activate;
-	klass_device->write_firmware = fu_bcm57xx_ethtool_device_write_firmware;
-	klass_device->read_firmware = fu_bcm57xx_ethtool_device_read_firmware;
-	klass_device->dump_firmware = fu_bcm57xx_ethtool_device_dump_firmware;
-	klass_udev_device->probe = fu_bcm57xx_ethtool_device_probe;
-	klass_udev_device->to_string = fu_bcm57xx_ethtool_device_to_string;
+	object_class->finalize = fu_bcm57xx_device_finalize;
+	klass_device->prepare_firmware = fu_bcm57xx_device_prepare_firmware;
+	klass_device->setup = fu_bcm57xx_device_setup;
+	klass_device->reload = fu_bcm57xx_device_setup;
+	klass_device->open = fu_bcm57xx_device_open;
+	klass_device->close = fu_bcm57xx_device_close;
+	klass_device->activate = fu_bcm57xx_device_activate;
+	klass_device->write_firmware = fu_bcm57xx_device_write_firmware;
+	klass_device->read_firmware = fu_bcm57xx_device_read_firmware;
+	klass_device->dump_firmware = fu_bcm57xx_device_dump_firmware;
+	klass_udev_device->probe = fu_bcm57xx_device_probe;
+	klass_udev_device->to_string = fu_bcm57xx_device_to_string;
 }
