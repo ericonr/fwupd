@@ -1,7 +1,6 @@
 # Broadcom BCM5719
 [DeviceInstanceId=PCI\VEN_14E4&DEV_1657]
 Plugin = bcm57xx
-GType = FuBcm57xxDevice
 
 # Dell PCI card
 [DeviceInstanceId=PCI\VEN_14E4&DEV_1657&SUBSYS_14E41904]

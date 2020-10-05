@@ -62,6 +62,12 @@ fu_bcm57xx_device_probe (FuUdevDevice *device, GError **error)
 	fn = g_build_filename (fu_udev_device_get_sysfs_path (device), "net", NULL);
 	ifaces = fu_common_filename_glob (fn, "en*", NULL);
 	if (ifaces == NULL || ifaces->len == 0) {
+		XXXX
+		fu_device_set_quirks (FU_DEVICE (self->recovery),
+				      fu_device_get_quirks (FU_DEVICE (self)));
+		fu_device_incorporate (FU_DEVICE (self->recovery), FU_DEVICE (self));
+		if (!fu_device_probe (FU_DEVICE (self->recovery), error))
+			return FALSE;
 		fu_device_add_child (FU_DEVICE (self), FU_DEVICE (self->recovery));
 	} else {
 		self->ethtool_iface = g_path_get_basename (g_ptr_array_index (ifaces, 0));
@@ -371,8 +377,11 @@ fu_bcm57xx_device_prepare_firmware (FuDevice *device,
 			g_set_error (error,
 				     FWUPD_ERROR,
 				     FWUPD_ERROR_NOT_SUPPORTED,
-				     "PCI vendor or model incorrect, got: %04X:%04X",
-				     vid, did);
+				     "PCI vendor or model incorrect, "
+				     "got: %04X:%04X expected %04X:%04X",
+				     vid, did,
+				     fu_udev_device_get_vendor (FU_UDEV_DEVICE (device)),
+				     fu_udev_device_get_model (FU_UDEV_DEVICE (device)));
 			return NULL;
 		}
 	}
@@ -446,8 +455,12 @@ fu_bcm57xx_device_setup (FuDevice *device, GError **error)
 
 	/* device is in recovery mode */
 	if (self->ethtool_iface == NULL) {
+		g_autoptr(FuDeviceLocker) locker = NULL;
 		g_debug ("device in recovery mode, use alternate device");
-		return TRUE;
+		locker = fu_device_locker_new (FU_DEVICE (self->recovery), error);
+		if (locker == NULL)
+			return FALSE;
+		return fu_device_setup (FU_DEVICE (self->recovery), error);
 	}
 
 	/* check the EEPROM size */
@@ -493,6 +506,11 @@ fu_bcm57xx_device_setup (FuDevice *device, GError **error)
 		}
 	}
 
+	/* success */
+	fu_device_add_flag (FU_DEVICE (self), FWUPD_DEVICE_FLAG_UPDATABLE);
+	fu_device_add_flag (FU_DEVICE (self), FWUPD_DEVICE_FLAG_CAN_VERIFY_IMAGE);
+	fu_device_add_flag (FU_DEVICE (self), FWUPD_DEVICE_FLAG_NEEDS_REBOOT);
+	fu_device_add_flag (FU_DEVICE (self), FWUPD_DEVICE_FLAG_BACKUP_BEFORE_INSTALL);
 	return TRUE;
 }
 
@@ -523,13 +541,7 @@ fu_bcm57xx_device_close (FuDevice *device, GError **error)
 static void
 fu_bcm57xx_device_init (FuBcm57xxDevice *self)
 {
-	GUdevDevice *udev_device = fu_udev_device_get_dev (FU_UDEV_DEVICE (self));
-
-	fu_device_add_flag (FU_DEVICE (self), FWUPD_DEVICE_FLAG_UPDATABLE);
-	fu_device_add_flag (FU_DEVICE (self), FWUPD_DEVICE_FLAG_CAN_VERIFY_IMAGE);
 	fu_device_add_flag (FU_DEVICE (self), FWUPD_DEVICE_FLAG_NO_GUID_MATCHING);
-	fu_device_add_flag (FU_DEVICE (self), FWUPD_DEVICE_FLAG_NEEDS_REBOOT);
-	fu_device_add_flag (FU_DEVICE (self), FWUPD_DEVICE_FLAG_BACKUP_BEFORE_INSTALL);
 	fu_device_set_protocol (FU_DEVICE (self), "com.broadcom.bcm57xx");
 	fu_device_add_icon (FU_DEVICE (self), "network-wired");
 
@@ -537,7 +549,7 @@ fu_bcm57xx_device_init (FuBcm57xxDevice *self)
 	fu_device_set_firmware_size (FU_DEVICE (self), BCM_FIRMWARE_SIZE);
 
 	/* used for recovery in case of ethtool failure */
-	self->recovery = fu_bcm57xx_recovery_device_new (udev_device);
+	self->recovery = fu_bcm57xx_recovery_device_new (NULL);
 }
 
 static void

@@ -347,8 +347,8 @@ fu_bcm57xx_recovery_device_nvram_write (FuBcm57xxRecoveryDevice *self,
 			return FALSE;
 		tmp.bits.Wr = 1;
 		tmp.bits.Doit = 1;
-		tmp.bits.First = (i == 0);
-		tmp.bits.Last = (i == bufsz - 1);
+		tmp.bits.First = 1; /* this is really slow but prevents corruption */
+		tmp.bits.Last = 1;
 		if (!fu_bcm57xx_recovery_device_bar_write (self, FU_BCM57XX_BAR_DEVICE,
 							   REG_NVM_COMMAND, tmp.r32, error))
 			return FALSE;
@@ -430,39 +430,18 @@ fu_bcm57xx_recovery_device_dump_firmware (FuDevice *device, GError **error)
 					    (FuDeviceLockerFunc) fu_bcm57xx_recovery_device_nvram_release_lock,
 					    error);
 	if (locker == NULL)
-		return FALSE;
+		return NULL;
 	locker2 = fu_device_locker_new_full (self,
 					     (FuDeviceLockerFunc) fu_bcm57xx_recovery_device_nvram_enable,
 					     (FuDeviceLockerFunc) fu_bcm57xx_recovery_device_nvram_disable,
 					     error);
 	if (locker2 == NULL)
-		return FALSE;
+		return NULL;
 	if (!fu_bcm57xx_recovery_device_nvram_read (self, 0x0, buf_dwrds, bufsz_dwrds, error))
 		return NULL;
+	if (!fu_device_locker_close (locker2, error))
+		return NULL;
 	return g_bytes_new (buf_dwrds, bufsz_dwrds * sizeof(guint32));
-}
-
-static FuFirmware *
-fu_bcm57xx_recovery_device_read_firmware (FuDevice *device, GError **error)
-{
-	g_autoptr(FuFirmware) firmware = fu_bcm57xx_firmware_new ();
-	g_autoptr(GBytes) fw = NULL;
-
-	/* read from hardware */
-	fw = fu_bcm57xx_recovery_device_dump_firmware (device, error);
-	if (fw == NULL)
-		return NULL;
-	if (!fu_firmware_parse (firmware, fw, FWUPD_INSTALL_FLAG_NONE, error))
-		return NULL;
-
-	/* remove images that will contain user-data */
-	if (!fu_firmware_remove_image_by_id (firmware, "info", error))
-		return NULL;
-	if (!fu_firmware_remove_image_by_id (firmware, "info2", error))
-		return NULL;
-	if (!fu_firmware_remove_image_by_id (firmware, "vpd", error))
-		return NULL;
-	return g_steal_pointer (&firmware);
 }
 
 static FuFirmware *
@@ -473,12 +452,24 @@ fu_bcm57xx_recovery_device_prepare_firmware (FuDevice *device,
 {
 	g_autoptr(GBytes) fw_old = NULL;
 	g_autoptr(FuFirmware) firmware = fu_bcm57xx_firmware_new ();
-	g_autoptr(FuFirmware) firmware_tmp = fu_bcm57xx_firmware_new ();
+	g_autoptr(FuFirmware) firmware_tmp = NULL;
 	g_autoptr(FuFirmwareImage) img_ape = NULL;
 	g_autoptr(FuFirmwareImage) img_stage1 = NULL;
 	g_autoptr(FuFirmwareImage) img_stage2 = NULL;
 
+	/* blit a backup */
+	if (flags & FWUPD_INSTALL_FLAG_FORCE) {
+		g_warning ("USING RAW IMAGE");
+		firmware_tmp = fu_firmware_new ();
+		if (!fu_firmware_parse (firmware_tmp, fw, flags, error)) {
+			g_prefix_error (error, "failed to parse new firmware: ");
+			return NULL;
+		}
+		return g_steal_pointer (&firmware_tmp);
+	}
+
 	/* try to parse NVRAM, stage1 or APE */
+	firmware_tmp = fu_bcm57xx_firmware_new ();
 	if (!fu_firmware_parse (firmware_tmp, fw, flags, error)) {
 		g_prefix_error (error, "failed to parse new firmware: ");
 		return NULL;
@@ -570,6 +561,10 @@ fu_bcm57xx_recovery_device_write_firmware (FuDevice *device,
 		return FALSE;
 	if (!fu_bcm57xx_recovery_device_nvram_write (self, 0x0, buf_dwrds, bufsz_dwrds, error))
 		return FALSE;
+	if (!fu_device_locker_close (locker2, error))
+		return FALSE;
+	if (!fu_device_locker_close (locker, error))
+		return FALSE;
 
 	/* reset APE */
 	return fu_device_activate (device, error);
@@ -617,8 +612,8 @@ fu_bcm57xx_recovery_device_setup (FuDevice *device, GError **error)
 
 		/* fall back to the string, e.g. '5719-v1.43' */
 		if (!fu_bcm57xx_recovery_device_nvram_read (self,
-						   BCM_NVRAM_STAGE1_BASE + BCM_NVRAM_STAGE1_VERADDR,
-						   &veraddr, 1, error))
+							    BCM_NVRAM_STAGE1_BASE + BCM_NVRAM_STAGE1_VERADDR,
+							    &veraddr, 1, error))
 			return FALSE;
 		veraddr = GUINT32_FROM_BE(veraddr);
 		if (veraddr > BCM_PHYS_ADDR_DEFAULT)
@@ -743,8 +738,11 @@ fu_bcm57xx_recovery_device_init (FuBcm57xxRecoveryDevice *self)
 	fu_device_add_flag (FU_DEVICE (self), FWUPD_DEVICE_FLAG_NO_GUID_MATCHING);
 	fu_device_add_flag (FU_DEVICE (self), FWUPD_DEVICE_FLAG_NEEDS_REBOOT);
 	fu_device_add_flag (FU_DEVICE (self), FWUPD_DEVICE_FLAG_BACKUP_BEFORE_INSTALL);
+	fu_device_add_flag (FU_DEVICE (self), FWUPD_DEVICE_FLAG_IGNORE_VALIDATION);
 	fu_device_set_protocol (FU_DEVICE (self), "com.broadcom.bcm57xx");
 	fu_device_add_icon (FU_DEVICE (self), "network-wired");
+	fu_device_set_logical_id (FU_DEVICE (self), "recovery");
+//	fu_device_set_priority (FU_DEVICE (self), -1);
 
 	/* other values are set from a quirk */
 	fu_device_set_firmware_size (FU_DEVICE (self), BCM_FIRMWARE_SIZE);
@@ -756,10 +754,18 @@ fu_bcm57xx_recovery_device_init (FuBcm57xxRecoveryDevice *self)
 	}
 }
 
+static gboolean
+fu_bcm57xx_recovery_device_probe (FuUdevDevice *device, GError **error)
+{
+	/* success */
+	return fu_udev_device_set_physical_id (device, "pci", error);
+}
+
 static void
 fu_bcm57xx_recovery_device_class_init (FuBcm57xxRecoveryDeviceClass *klass)
 {
 	FuDeviceClass *klass_device = FU_DEVICE_CLASS (klass);
+	FuUdevDeviceClass *klass_udev_device = FU_UDEV_DEVICE_CLASS (klass);
 	klass_device->activate = fu_bcm57xx_recovery_device_activate;
 	klass_device->prepare_firmware = fu_bcm57xx_recovery_device_prepare_firmware;
 	klass_device->setup = fu_bcm57xx_recovery_device_setup;
@@ -767,10 +773,10 @@ fu_bcm57xx_recovery_device_class_init (FuBcm57xxRecoveryDeviceClass *klass)
 	klass_device->open = fu_bcm57xx_recovery_device_open;
 	klass_device->close = fu_bcm57xx_recovery_device_close;
 	klass_device->write_firmware = fu_bcm57xx_recovery_device_write_firmware;
-	klass_device->read_firmware = fu_bcm57xx_recovery_device_read_firmware;
 	klass_device->dump_firmware = fu_bcm57xx_recovery_device_dump_firmware;
 	klass_device->attach = fu_bcm57xx_recovery_device_attach;
 	klass_device->detach = fu_bcm57xx_recovery_device_detach;
+	klass_udev_device->probe = fu_bcm57xx_recovery_device_probe;
 }
 
 FuBcm57xxRecoveryDevice *
