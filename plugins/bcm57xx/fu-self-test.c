@@ -14,7 +14,7 @@
 #include "fu-bcm57xx-firmware.h"
 
 static void
-fu_bcm57xx_create_verbuf (guint32 *bufver, const gchar *version)
+fu_bcm57xx_create_verbuf (guint8 *bufver, const gchar *version)
 {
 	memcpy (bufver, version, strlen (version) + 1);
 }
@@ -25,7 +25,7 @@ fu_bcm57xx_common_veritem_func (void)
 	g_autoptr(Bcm57xxVeritem) veritem1 = NULL;
 	g_autoptr(Bcm57xxVeritem) veritem2 = NULL;
 	g_autoptr(Bcm57xxVeritem) veritem3 = NULL;
-	guint32 bufver[4] = { 0x0 };
+	guint8 bufver[16] = { 0x0 };
 
 	fu_bcm57xx_create_verbuf (bufver, "5719-v1.43");
 	veritem1 = fu_bcm57xx_veritem_new (bufver, sizeof(bufver));

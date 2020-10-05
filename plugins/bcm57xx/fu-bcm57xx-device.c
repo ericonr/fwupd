@@ -27,7 +27,7 @@
 #include "fu-bcm57xx-recovery-device.h"
 #include "fu-bcm57xx-firmware.h"
 
-#define FU_BCM57XX_BLOCK_SZ		0x8000 /* 32kb */
+#define FU_BCM57XX_BLOCK_SZ		0x4000 /* 16kb */
 
 struct _FuBcm57xxDevice {
 	FuUdevDevice		 parent_instance;
@@ -331,7 +331,7 @@ fu_bcm57xx_device_dump_firmware (FuDevice *device, GError **error)
 						   (guint8 *) chk->data, chk->data_sz,
 						   error))
 			return NULL;
-		fu_device_set_progress_full (device, i, chunks->len);
+		fu_device_set_progress_full (device, i, chunks->len - 1);
 	}
 
 	/* read from hardware */
@@ -449,7 +449,7 @@ fu_bcm57xx_device_write_firmware (FuDevice *device,
 						    chk->data, chk->data_sz,
 						    error))
 			return FALSE;
-		fu_device_set_progress_full (device, i, chunks->len);
+		fu_device_set_progress_full (device, i, chunks->len - 1);
 	}
 
 	/* verify */
