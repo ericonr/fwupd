@@ -3902,6 +3902,7 @@ fu_engine_get_details (FuEngine *self, FuEngineRequest *request, gint fd, GError
 			if (!fu_engine_check_requirements (self, request, task,
 							   FWUPD_INSTALL_FLAG_OFFLINE |
 							   FWUPD_INSTALL_FLAG_ALLOW_REINSTALL |
+							   FWUPD_INSTALL_FLAG_ALLOW_BRANCH_SWITCH |
 							   FWUPD_INSTALL_FLAG_ALLOW_OLDER,
 							   &error_req)) {
 				g_debug ("%s failed requirement checks: %s",
@@ -4234,6 +4235,7 @@ fu_engine_add_releases_for_device_component (FuEngine *self,
 
 	if (!fu_engine_check_requirements (self, request, task,
 					   FWUPD_INSTALL_FLAG_OFFLINE |
+					   FWUPD_INSTALL_FLAG_ALLOW_BRANCH_SWITCH |
 					   FWUPD_INSTALL_FLAG_ALLOW_REINSTALL |
 					   FWUPD_INSTALL_FLAG_ALLOW_OLDER,
 					   error))
